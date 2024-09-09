@@ -158,3 +158,16 @@ cython_debug/
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
+output/*
+new-output/*
+630k-audioset-fusion-best.pt
+Clotho/*
+Clotho-large/*
+ckpt-base/*
+ckpt-large/*
+abl-output/*
+AudioCaps
+data/audiocaps/*
+data/clotho/*
+logs/*
+.git

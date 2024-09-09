@@ -1,12 +1,12 @@
 # Experiment Config for each experiment
-output_dir: new-output/enclap-CL-Clotho
+output_dir: output/enclap-test-dpo
 logging_dir: runs/tb_log
 logging_steps: 10
 seed: 1115
-train_file: csv/clotho/train.csv
-validation_file: csv/clotho/valid.csv
-encodec_base_path: data/clotho/encodec
-clap_base_path: data/clotho/clap
+train_file: csv/audiocaps/train.csv
+validation_file: csv/audiocaps/valid.csv
+encodec_base_path: data/audiocaps/encodec
+clap_base_path: data/audiocaps/clap
 tokenizer_name: facebook/bart-large
 config_name_or_path: facebook/bart-large
 model_name_or_path: facebook/bart-large
@@ -18,9 +18,9 @@ encodec_masking_prob: 0.15
 encodec_masking_span: 10
 num_train_epochs: 15
 max_train_steps: null
-gradient_accumulation_steps: 2
-per_device_train_batch_size: 48
-per_device_eval_batch_size: 48
+gradient_accumulation_steps: 1
+per_device_train_batch_size: 32
+per_device_eval_batch_size: 32
 split_batches: true
 checkpointing_steps: epoch  # 'epoch' to save for each epoch, or number of steps
 resume_from_checkpoint: null
@@ -33,8 +33,8 @@ val_max_target_length: 50
 # "lr_schedulre_type" should be one of "linear", "cosine", "cosine_with_restarts", "polynomial", 
 # "constant", "constant_with_warmpup", "inverse_sqrt", "reduce_lr_on_plateau", "two_stage_inverse_sqrt"
 lr_scheduler_type: inverse_sqrt
-learning_rate: 2.0e-5  # peak lr
-num_warmup_steps: 1000
+learning_rate: 1e-6  # peak lr
+num_warmup_steps: 10 # 2000
 weight_decay: 0.01
 max_grad_norm: 1.0
 

@@ -17,6 +17,7 @@ import logging
 import math
 import os
 import sys
+import copy
 
 import datasets
 import numpy as np
@@ -36,6 +37,10 @@ from transformers import (
     get_inverse_sqrt_schedule,
     get_scheduler,
 )
+from laion_clap import CLAP_Module
+import torch.nn as nn
+from sentence_transformers import util
+
 
 from data.collator import DataCollatorForEnClapBart, EvalDataCollatorForEnClapBart
 from data.preprocess import Preprocessor
@@ -44,6 +49,40 @@ from modeling.enclap_bart import EnClapBartForConditionalGeneration, EnClapBartC
 logger = get_logger(__name__)
 metric_list = ["meteor", "spider"]
 
+def get_lr(optimizer):
+    for p in optimizer.param_groups:
+        return p["lr"]
+
+
+class NTXent(nn.Module):
+
+    def __init__(self, temperature=0.07):
+        super(NTXent, self).__init__()
+        self.loss = nn.LogSoftmax(dim=1)
+        self.tau = temperature
+
+    def forward(self, audio_embeds, text_embeds):
+
+        n = audio_embeds.shape[0]
+
+        # a2t = util.cos_sim(audio_embeds, text_embeds) / self.tau
+        # t2a = util.cos_sim(text_embeds, audio_embeds) / self.tau
+        a2t = torch.nn.functional.normalize(audio_embeds, dim=-1)@torch.nn.functional.normalize(text_embeds, dim=-1).t()
+        t2a = torch.nn.functional.normalize(text_embeds, dim=-1)@torch.nn.functional.normalize(audio_embeds, dim=-1).t()
+        labels = torch.arange(audio_embeds.shape[0]).to(audio_embeds.device)
+
+        # mask = labels.expand(n, n).eq(labels.expand(n, n).t()).to(a2t.device)
+        # mask_diag = mask.diag()
+        # mask_diag = torch.diag_embed(mask_diag)
+        # mask = mask ^ mask_diag
+
+        # a2t_loss = - self.loss(a2t).masked_fill(mask, 0).diag().mean()
+        # t2a_loss = - self.loss(t2a).masked_fill(mask, 0).diag().mean()
+
+        loss = 0.5 * torch.nn.functional.cross_entropy(a2t, labels)\
+                + 0.5 * torch.nn.functional.cross_entropy(t2a, labels)
+
+        return loss
 def compute_cl(x,y):
     cos = torch.nn.CosineSimilarity(dim=-1, eps=1e-6)
     sim = cos(x,y)
@@ -55,10 +94,17 @@ def compute_cl(x,y):
     loss = -loss.log().mean()
     return loss
 
+def get_cosine_sim(x, y):
+    cos = torch.nn.CosineSimilarity(dim=-1, eps=1e-6)
+    sim = cos(x,y)
+    return sim
+
 def main():
     # Load Configuration
     cfg_path = sys.argv[1]
     args = OmegaConf.load(cfg_path)
+
+    loss_func = NTXent()
 
     # Initialize Logging
     accelerator_log_kwargs = {}
@@ -133,6 +179,11 @@ def main():
             )
     else:
         model = EnClapBartForConditionalGeneration(config=config)
+    #### load pretrained-models
+    # model = EnClapBartForConditionalGeneration.from_pretrained('ckpt-base')
+    # clap_model = CLAP_Module(enable_fusion=True, amodel="HTSAT-tiny")
+    # clap_model.load_ckpt("630k-audioset-fusion-best.pt")
+    ##########################################################################
 
     # Set the generation config
     if args.val_max_target_length is None:
@@ -251,20 +302,20 @@ def main():
         args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
         overrode_max_train_steps = True
 
-    if args.lr_scheduler_type == "inverse_sqrt" and hasattr(args, "time_scale"):
-        lr_scheduler = get_inverse_sqrt_schedule(
-            optimizer=optimizer,
-            num_warmup_steps=args.num_warmup_steps,
-            timescale=args.time_scale,
-        )
-    else:
-        lr_scheduler = get_scheduler(
-            name=args.lr_scheduler_type,
-            optimizer=optimizer,
-            num_warmup_steps=args.num_warmup_steps,
-            num_training_steps=args.max_train_steps,
-        )
-
+    # if args.lr_scheduler_type == "inverse_sqrt" and hasattr(args, "time_scale"):
+    #     lr_scheduler = get_inverse_sqrt_schedule(
+    #         optimizer=optimizer,
+    #         num_warmup_steps=args.num_warmup_steps,
+    #         timescale=args.time_scale,
+    #     )
+    # else:
+    #     lr_scheduler = get_scheduler(
+    #         name=args.lr_scheduler_type,
+    #         optimizer=optimizer,
+    #         num_warmup_steps=args.num_warmup_steps,
+    #         num_training_steps=args.max_train_steps,
+    #     )
+    lr_scheduler=None
     # Prepare everything with our `accelerator`.
     (
         model,
@@ -275,7 +326,6 @@ def main():
     ) = accelerator.prepare(
         model, optimizer, train_dataloader, eval_dataloader, lr_scheduler
     )
-
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(
         len(train_dataloader) / args.gradient_accumulation_steps
@@ -393,18 +443,30 @@ def main():
                 outputs = model(**batch)
                 
 
-                # labels = batch['labels']
-                # decoder_attn_mask = labels.eq(-100)
-                # decoder_attn_mask = ~decoder_attn_mask.to(labels.device)
+                labels = copy.deepcopy(batch['labels'])
+                labels[labels==-100]=1
+                org_caption = tokenizer.batch_decode(labels, skip_special_tokens=True)
+
+                decoder_attn_mask = labels.eq(-100)
+                decoder_attn_mask = ~decoder_attn_mask.to(labels.device)
+                # outputs = model(**batch)
                 # encoder_hidden = outputs.encoder_last_hidden_state*batch['encodec_mask'].unsqueeze(-1)
-                # encoder_hidden = encoder_hidden.sum(dim=1) / batch['encodec_mask'].sum(-1, keepdim=True)
+                encoder_hidden = outputs.encoder_last_hidden_state
+                # print("encoder hidden shape: ", encoder_hidden.shape)
+                encoder_hidden = encoder_hidden.sum(dim=1) / batch['encodec_mask'].sum(-1, keepdim=True)
+
                 # decoder_hidden = outputs.decoder_hidden_states*decoder_attn_mask.unsqueeze(-1)
+                decoder_hidden = outputs.decoder_hidden_states
+                # print("decoder hidden shape: ", decoder_hidden.shape)
+                decoder_hidden = decoder_hidden.sum(dim=1)/decoder_attn_mask.squeeze(-1).sum(-1, keepdim=True)
 
-                # decoder_hidden = decoder_hidden.sum(dim=1)/decoder_attn_mask.squeeze(-1).sum(-1, keepdim=True)
 
-                # cl_loss = compute_cl(encoder_hidden, decoder_hidden)
-                # loss = outputs.loss + cl_loss
-                loss = outputs.loss
+                cl_loss = loss_func(encoder_hidden, decoder_hidden)
+                # print("CL loss: ", cl_loss)
+                alpha = 0.1
+
+                # loss = outputs.loss
+                loss = outputs.loss + alpha*cl_loss
                 # We keep track of the loss at each epoch
                 if args.with_tracking:
                     total_loss += outputs.lm_loss.item()
@@ -417,7 +479,7 @@ def main():
                         model.parameters(), max_norm=args.max_grad_norm
                     )
                 optimizer.step()
-                lr_scheduler.step()
+                # lr_scheduler.step()
                 optimizer.zero_grad()
 
                 # Checks if the accelerator has performed an optimization step behind the scenes
@@ -427,9 +489,10 @@ def main():
                     epoch_iterator.set_postfix(loss=total_loss / completed_steps)
 
                     if completed_steps % args.logging_steps == 0:
-                        train_log = {
-                            "train/learning_rate": lr_scheduler.get_last_lr()[0]
-                        }
+                        # train_log = {
+                        #     "train/learning_rate": lr_scheduler.get_last_lr()[0]
+                        # }
+                        train_log = {}
                         train_log["train/loss"] = (
                             total_loss - logging_loss
                         ) / args.logging_steps

@@ -46,7 +46,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    model = CLAP_Module(enable_fusion=args.enable_fusion, aencoder=args.audio_encoder)
+    model = CLAP_Module(enable_fusion=args.enable_fusion, amodel=args.audio_encoder)
     model.load_ckpt(args.clap_ckpt)
     data_path = Path(args.data_path)
     save_path = Path(args.save_path)

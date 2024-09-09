@@ -17,6 +17,7 @@ import logging
 import math
 import os
 import sys
+import copy
 
 import datasets
 import numpy as np
@@ -36,6 +37,8 @@ from transformers import (
     get_inverse_sqrt_schedule,
     get_scheduler,
 )
+from laion_clap import CLAP_Module
+from loss import OTLossAlign, OTBaseline, OTLossKernel
 
 from data.collator import DataCollatorForEnClapBart, EvalDataCollatorForEnClapBart
 from data.preprocess import Preprocessor
@@ -43,6 +46,25 @@ from modeling.enclap_bart import EnClapBartForConditionalGeneration, EnClapBartC
 
 logger = get_logger(__name__)
 metric_list = ["meteor", "spider"]
+
+def get_lr(optimizer):
+    for p in optimizer.param_groups:
+        return p["lr"]
+gen_config = {
+    "_from_model_config": True,
+    "bos_token_id": 0,
+    "decoder_start_token_id": 2,
+    "early_stopping": True,
+    "eos_token_id": 2,
+    "forced_bos_token_id": 0,
+    "forced_eos_token_id": 2,
+    "no_repeat_ngram_size": 3,
+    "top_p": 0.99,
+    "pad_token_id": 1,
+    "max_length": 30,
+    'num_return_sequences':4,
+    'do_sample': True
+}
 
 def compute_cl(x,y):
     cos = torch.nn.CosineSimilarity(dim=-1, eps=1e-6)
@@ -55,10 +77,18 @@ def compute_cl(x,y):
     loss = -loss.log().mean()
     return loss
 
+def get_cosine_sim(x, y):
+    cos = torch.nn.CosineSimilarity(dim=-1, eps=1e-6)
+    sim = cos(x,y)
+    return sim
+
 def main():
     # Load Configuration
     cfg_path = sys.argv[1]
     args = OmegaConf.load(cfg_path)
+    # ot_loss = OTBaseline()
+    # ot_loss = OTLossAlign(epsilon=0.1, use_pos=True, pos_dim=1024)
+    ot_loss = OTLossKernel(epsilon=0.1, use_pos=True, pos_dim=1024)
 
     # Initialize Logging
     accelerator_log_kwargs = {}
@@ -133,6 +163,11 @@ def main():
             )
     else:
         model = EnClapBartForConditionalGeneration(config=config)
+    #### load pretrained-models
+    # model = EnClapBartForConditionalGeneration.from_pretrained('ckpt')
+    # clap_model = CLAP_Module(enable_fusion=True, amodel="HTSAT-tiny")
+    # clap_model.load_ckpt("630k-audioset-fusion-best.pt")
+    ##########################################################################
 
     # Set the generation config
     if args.val_max_target_length is None:
@@ -264,7 +299,7 @@ def main():
             num_warmup_steps=args.num_warmup_steps,
             num_training_steps=args.max_train_steps,
         )
-
+    # lr_scheduler=None
     # Prepare everything with our `accelerator`.
     (
         model,
@@ -275,7 +310,6 @@ def main():
     ) = accelerator.prepare(
         model, optimizer, train_dataloader, eval_dataloader, lr_scheduler
     )
-
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(
         len(train_dataloader) / args.gradient_accumulation_steps
@@ -390,21 +424,28 @@ def main():
         )
         for step, batch in enumerate(epoch_iterator):
             with accelerator.accumulate(model):
-                outputs = model(**batch)
+                # outputs = model(**batch)
                 
 
-                # labels = batch['labels']
-                # decoder_attn_mask = labels.eq(-100)
-                # decoder_attn_mask = ~decoder_attn_mask.to(labels.device)
-                # encoder_hidden = outputs.encoder_last_hidden_state*batch['encodec_mask'].unsqueeze(-1)
+                labels = copy.deepcopy(batch['labels'])
+                labels[labels==-100]=1
+                org_caption = tokenizer.batch_decode(labels, skip_special_tokens=True)
+
+                decoder_attn_mask = labels.eq(1)
+                decoder_attn_mask = ~decoder_attn_mask.to(labels.device)
+
+                outputs = model(**batch)
+                encoder_hidden = outputs.encoder_last_hidden_state*batch['encodec_mask'].unsqueeze(-1)
                 # encoder_hidden = encoder_hidden.sum(dim=1) / batch['encodec_mask'].sum(-1, keepdim=True)
-                # decoder_hidden = outputs.decoder_hidden_states*decoder_attn_mask.unsqueeze(-1)
 
-                # decoder_hidden = decoder_hidden.sum(dim=1)/decoder_attn_mask.squeeze(-1).sum(-1, keepdim=True)
+                decoder_hidden = outputs.decoder_hidden_states*decoder_attn_mask.unsqueeze(-1)
+                reg_loss = ot_loss(encoder_hidden, batch['encodec_mask'],decoder_hidden, decoder_attn_mask)
+                # print("reg loss: ", reg_loss)
+                # reg_loss =0
+                alpha = 0.1
 
-                # cl_loss = compute_cl(encoder_hidden, decoder_hidden)
-                # loss = outputs.loss + cl_loss
-                loss = outputs.loss
+                # loss = (1-alpha)*outputs.loss + alpha*reg_loss
+                loss = (1-alpha)*outputs.loss - alpha*reg_loss
                 # We keep track of the loss at each epoch
                 if args.with_tracking:
                     total_loss += outputs.lm_loss.item()
@@ -427,9 +468,10 @@ def main():
                     epoch_iterator.set_postfix(loss=total_loss / completed_steps)
 
                     if completed_steps % args.logging_steps == 0:
-                        train_log = {
-                            "train/learning_rate": lr_scheduler.get_last_lr()[0]
-                        }
+                        # train_log = {
+                        #     "train/learning_rate": lr_scheduler.get_last_lr()[0]
+                        # }
+                        train_log = {}
                         train_log["train/loss"] = (
                             total_loss - logging_loss
                         ) / args.logging_steps
@@ -519,12 +561,13 @@ def main():
 
         if args.checkpointing_steps == "epoch":
             output_dir = f"epoch_{epoch}"
-            if args.output_dir is not None:
-                output_dir = os.path.join(args.output_dir, "checkpoints", output_dir)
-            accelerator.save_state(output_dir)
-            if accelerator.is_main_process:
-                unwrapped_model = accelerator.unwrap_model(model)
-                unwrapped_model.config.save_pretrained(output_dir)
+            if epoch>=10:
+                if args.output_dir is not None:
+                    output_dir = os.path.join(args.output_dir, "checkpoints", output_dir)
+                accelerator.save_state(output_dir)
+                if accelerator.is_main_process:
+                    unwrapped_model = accelerator.unwrap_model(model)
+                    unwrapped_model.config.save_pretrained(output_dir)
 
 
 if __name__ == "__main__":

@@ -28,6 +28,8 @@ if __name__ == "__main__":
 
     with torch.no_grad():
         for wav_path in tqdm(data_path.glob("**/*.wav")):
+            # print("*"*90)
+            # print(wav_path)
             wav, sr = torchaudio.load(wav_path)
             wav = convert_audio(wav, sr, model.sample_rate, model.channels)
             wav = wav.unsqueeze(0).to(device)

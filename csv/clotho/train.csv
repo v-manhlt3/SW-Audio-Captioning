@@ -854,11 +854,11 @@ train/Collob church bells 2.npy,A clock tower bell chimes loudly for multiple ti
 train/Collob church bells 2.npy,A loud clock tower bell chimes multiple times at a steady state
 train/Collob church bells 2.npy,A single church bell constantly rings and echoes across the whole town.
 train/Collob church bells 2.npy,"Church bells are ringing loudly and repetitively, over and over again."
-train/20061208.npyes.02.npy,A person wades and treads in the water.
-train/20061208.npyes.02.npy,Water being gently moved in pool and some water splashing as moving.
-train/20061208.npyes.02.npy,Water moves and splashes as waves crash far in the distance.
-train/20061208.npyes.02.npy,Water ripples gently in a pool as it moves.
-train/20061208.npyes.02.npy,Water was gently moved in pool and some water splashed as moved.
+train/20061208.waves.02.npy,A person wades and treads in the water.
+train/20061208.waves.02.npy,Water being gently moved in pool and some water splashing as moving.
+train/20061208.waves.02.npy,Water moves and splashes as waves crash far in the distance.
+train/20061208.waves.02.npy,Water ripples gently in a pool as it moves.
+train/20061208.waves.02.npy,Water was gently moved in pool and some water splashed as moved.
 train/20061214.stapler.npy,A man swings a swatting object against a wall.
 train/20061214.stapler.npy,A person is swatting a swatting object against a wall.
 train/20061214.stapler.npy,A plastic bar is continuously being cut into pieces.

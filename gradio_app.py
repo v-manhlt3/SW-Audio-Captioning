@@ -5,7 +5,7 @@ import gradio as gr
 import numpy as np
 import torch
 
-from inference import EnClap
+from inference_cosine import EnClap
 
 
 def input_toggle(choice: str):

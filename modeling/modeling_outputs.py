@@ -9,3 +9,4 @@ from transformers.modeling_outputs import Seq2SeqLMOutput
 class EnClapBartOutput(Seq2SeqLMOutput):
     mcm_loss: Optional[torch.FloatTensor] = None
     lm_loss: Optional[torch.FloatTensor] = None
+    # energy: Optional[torch.FloatTensor] = None
